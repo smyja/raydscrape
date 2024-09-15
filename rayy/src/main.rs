@@ -5,13 +5,22 @@ use std::{fs, thread, time};
 use std::io::Write;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PoolData {
-    // Define the structure of the expected response.
-    // Here, we use serde's Value to parse dynamic data.
-    data: Value,
+struct ApiResponse {
+    data: PoolData,
 }
 
-// Helper function to load the checkpoint (last processed page)
+#[derive(Debug, Serialize, Deserialize)]
+struct PoolData {
+    data: Vec<PoolInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PoolInfo {
+    #[serde(flatten)]
+    details: Value,
+}
+
+// Helper functions remain unchanged
 fn load_checkpoint(checkpoint_file: &str) -> u32 {
     if let Ok(content) = fs::read_to_string(checkpoint_file) {
         return content.trim().parse::<u32>().unwrap_or(1);
@@ -25,20 +34,20 @@ fn save_checkpoint(checkpoint_file: &str, page_number: u32) {
     writeln!(file, "{}", page_number).expect("Unable to write checkpoint");
 }
 
-// Helper function to load the existing data from a file
-fn load_existing_data(data_file: &str) -> Vec<Value> {
+
+// Update the load_existing_data and save_data functions
+fn load_existing_data(data_file: &str) -> Vec<PoolInfo> {
     if let Ok(content) = fs::read_to_string(data_file) {
-        return serde_json::from_str(&content).unwrap_or_else(|_| vec![]);
+        serde_json::from_str(&content).unwrap_or_else(|_| vec![])
+    } else {
+        vec![]
     }
-    vec![]
 }
 
-// Helper function to save the fetched data into a file
-fn save_data(data_file: &str, all_data: &Vec<Value>) {
+fn save_data(data_file: &str, all_data: &Vec<PoolInfo>) {
     let json_data = serde_json::to_string_pretty(all_data).expect("Unable to serialize data");
     fs::write(data_file, json_data).expect("Unable to write data file");
 }
-
 #[tokio::main]
 async fn main() -> Result<(), reqwest::Error> {
     let url = "https://api-v3.raydium.io/pools/info/list";
@@ -76,7 +85,7 @@ async fn main() -> Result<(), reqwest::Error> {
 
         while retries < max_retries {
             let request = client.get(url)
-                .headers(headers.clone()) // Clone the headers for each request
+                .headers(headers.clone())
                 .query(&params);
 
             let response = request.send().await;
@@ -84,20 +93,15 @@ async fn main() -> Result<(), reqwest::Error> {
             match response {
                 Ok(res) => {
                     if res.status().is_success() {
-                        let parsed_data: PoolData = res.json().await?;
+                        let parsed_data: ApiResponse = res.json().await?;
 
-                        let empty_vec = vec![];
-                        let data = parsed_data.data.get("data")
-                            .and_then(|v| v.as_array())
-                            .unwrap_or(&empty_vec);
-
-                        if data.is_empty() {
+                        if parsed_data.data.data.is_empty() {
                             println!("Reached the last page at page {}. No more data.", current_page);
-                            return Ok(()); // Break the loop, no more data
+                            return Ok(());
                         }
 
                         // Append the new data
-                        all_data.extend(data.iter().cloned());
+                        all_data.extend(parsed_data.data.data);
 
                         // Save the current page's data immediately
                         save_data(data_file, &all_data);
